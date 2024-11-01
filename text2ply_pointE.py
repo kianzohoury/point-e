@@ -36,17 +36,14 @@ import time
 import trimesh
 
 # imports from machina-labs project
-from ..dataset import shapenetcore
+from ..dataset import shapenetcore, transform
 module_path = Path(__file__).parent.resolve()
 sys.path.append(str(Path(module_path, "checkpoints/")))
 Path(module_path.parent, "synthetic_data").mkdir(exist_ok=True)
 
 # EDIT: change defaults
 parser = argparse.ArgumentParser()
-parser.add_argument('--ckpt', default=Path(
-    module_path.parent, "checkpoints", "defect_diffusion.pth"
-), type=str, help="path to finetuned model")
-
+parser.add_argument('--checkpoint', help="path to finetuned model")
 parser.add_argument('--save_dir', default=Path(module_path.parent, "synthetic_data"), type=str, help="result files save to here")
 parser.add_argument('--num_generate', default=1, type=int, help="number of point clouds to generate")
 opt = parser.parse_args()
@@ -64,8 +61,8 @@ upsampler_model = model_from_config(MODEL_CONFIGS['upsample'], device)
 upsampler_model.eval()
 upsampler_diffusion = diffusion_from_config(DIFFUSION_CONFIGS['upsample'])
 
-print('loading finetuned checkpoint: ', opt.ckpt)
-base_model.load_state_dict(torch.load(opt.ckpt, map_location=device)['model_state_dict'])
+print('loading finetuned checkpoint: ', opt.checkpoint)
+base_model.load_state_dict(torch.load(opt.checkpoint, map_location=device)['model_state_dict'])
 
 ### results (.ply) saved here
 num_generate = opt.num_generate
@@ -104,16 +101,22 @@ import pickle
 import pandas as pd
 
 # EDIT: test on ShapeNetCore dataset
-test_dataset = shapenetcore.ShapeNetCore(
+dataset = shapenetcore.ShapeNetCore(
     root=f"{module_path.parent}/Shapenetcore_benchmark",
-    split="test",
+    split="train",
     max_points=1024,
     downsampling_mode="uniform",
-    input_transform=None,
+    input_transform=transform.RandomTransform(
+        removal_amount=0.2,
+        noise_amount=0.02,
+        noise_type="uniform",
+        prob_both=0,
+        task="completion" if "removal" in opt.checkpoint else "denoising"
+    ),
     use_rotations=False
 )
 
-test_uids = list(range(len(test_dataset)))
+test_uids = list(range(len(dataset)))
 ### add the below random command to parallel test
 random.shuffle(test_uids)
 test_uids = test_uids[:num_generate]
@@ -125,7 +128,8 @@ for i in range(len(test_uids)):
     if os.path.exists(os.path.join(opt.save_dir,'%s.ply'%(test_uids[i]))):
        continue
    # only need a test prompt since we're generating point clouds
-    prompt = test_dataset[i][1]
+    _, class_label, defect_type, x, y = dataset[i]
+    prompt = f"{class_label.lower()} {dataset.id_to_defect_type[defect_type]} defect"
     samples = None
     for x in tqdm(sampler.sample_batch_progressive(batch_size=batch_size, model_kwargs=dict(texts=[prompt,]*batch_size))):
         samples = x

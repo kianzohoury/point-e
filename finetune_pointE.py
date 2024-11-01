@@ -35,7 +35,7 @@ from pathlib import Path
 
 
 # imports from machina-labs project
-from ..dataset import shapenetcore
+from ..dataset import shapenetcore, transform
 module_path = Path(__file__).parent.resolve()
 sys.path.append(str(Path(module_path, "example_material/")))
 
@@ -52,7 +52,7 @@ def setup_ddp(gpu, args):
 
 # EDIT: accept ShapeNetCore dataset
 class pointE_train_dataset(Dataset):
-    def __init__(self, pts_path, split="train"):
+    def __init__(self, pts_path, split="train", defect_type: str = "removal"):
         # self.captions = pd.read_csv(f'{module_path}/example_material/Cap3D_automated_Objaverse.csv', header=None)
         # self.valid_uid = list(pickle.load(open(f'{module_path}/example_material/training_set.pkl','rb')))
         # self.final_uid = self.valid_uid
@@ -68,9 +68,15 @@ class pointE_train_dataset(Dataset):
         self.dataset = shapenetcore.ShapeNetCore(
             root=f"{module_path.parent}/Shapenetcore_benchmark",
             split=split,
-            max_points=1024,
+            max_points=1280 if defect_type == "removal" else 1024,
             downsampling_mode="uniform",
-            input_transform=None,
+            input_transform=transform.RandomTransform(
+                removal_amount=0.2,
+                noise_amount=0.02,
+                noise_type="uniform",
+                prob_both=0,
+                task="completion" if defect_type == "removal" else "denoising"
+            ),
             use_rotations=False
         )
 
@@ -79,17 +85,17 @@ class pointE_train_dataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        caption = self.dataset[idx][1].lower()
-        data_tensor = self.dataset[idx][-1].permute(1, 0)
+        _, class_label, defect_type, x, y = self.dataset[idx]
+        caption = f"{class_label.lower()} {self.dataset.id_to_defect_type[defect_type]} defect"
+        data_tensor = x.permute(1, 0)
         # create dummy color channels since the models expect (x, y, z, r, g, b) format
-        # for the last dimension
         color_channels = torch.zeros((3, data_tensor.shape[1]))
         data_tensor = torch.cat([data_tensor, color_channels], dim=0)
         return {'caption': caption, 'pts': data_tensor}
 
 class pointE_val_dataset(pointE_train_dataset):
-    def __init__(self, pts_path, split="val"):
-        super(pointE_val_dataset, self).__init__(pts_path, split=split)
+    def __init__(self, pts_path, split="val", **kwargs):
+        super(pointE_val_dataset, self).__init__(pts_path, split=split, **kwargs)
 
 
 def train(rank, args):
@@ -133,9 +139,9 @@ def train(rank, args):
         )
     
     diffusion = diffusion_from_config(DIFFUSION_CONFIGS[base_name])
-    my_dataset_train = pointE_train_dataset(args.dataset_path)
+    my_dataset_train = pointE_train_dataset(pts_path=args.dataset_path, defect_type=args.defect_type)
     data_loader = DataLoader(my_dataset_train, batch_size=batch_size, shuffle=True, drop_last=True)
-    my_dataset_val = pointE_val_dataset(args.dataset_path)
+    my_dataset_val = pointE_val_dataset(pts_path=args.dataset_path, defect_type=args.defect_type)
     data_loader_val = DataLoader(my_dataset_val, batch_size=batch_size, num_workers=8, prefetch_factor=4, drop_last=True)
     optimizer= optim.AdamW(model.parameters(), lr=learning_rate)
     total_iter_per_epoch = int(len(my_dataset_train)/batch_size)
@@ -220,7 +226,8 @@ if __name__ == '__main__':
     model_group.add_argument('--batch_size', type = int, default = 64, help = 'batch size')
     model_group.add_argument('--epoch', type = int, default = 1, help = 'total epoch')
     # modified
-    model_group.add_argument('--dataset-path', type = str, default = '../Shapenetcore_benchmark', help = 'the directory where the point clouds are stored')
+    model_group.add_argument('--dataset_path', type = str, default = '../Shapenetcore_benchmark', help = 'the directory where the point clouds are stored')
+    model_group.add_argument('--defect_type', type = str, default = "removal", help = 'defect type to model')
 
     args = parser.parse_args()
     if args.gpus == 1:
