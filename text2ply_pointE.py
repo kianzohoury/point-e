@@ -28,12 +28,12 @@ from point_e.util.plotting import plot_point_cloud
 from point_e.util.point_cloud import PointCloud
 from point_e.util.mesh import TriMesh
 import numpy as np
-import trimesh
 import pickle
 
 import argparse
 import random
 import time
+import trimesh
 
 # imports from machina-labs project
 from ..dataset import shapenetcore
@@ -47,8 +47,8 @@ parser.add_argument('--ckpt', default=Path(
     module_path.parent, "checkpoints", "defect_diffusion.pth"
 ), type=str, help="path to finetuned model")
 
-parser.add_argument('--save_name', default=Path(module_path.parent, "synthetic_data"), type=str, help="result files save to here")
-parser.add_argument('--num_generate', default=1, type=str, help="number of point clouds to generate")
+parser.add_argument('--save_dir', default=Path(module_path.parent, "synthetic_data"), type=str, help="result files save to here")
+parser.add_argument('--num_generate', default=1, type=int, help="number of point clouds to generate")
 opt = parser.parse_args()
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -65,24 +65,30 @@ upsampler_model.eval()
 upsampler_diffusion = diffusion_from_config(DIFFUSION_CONFIGS['upsample'])
 
 print('loading finetuned checkpoint: ', opt.ckpt)
-base_model.load_state_dict(torch.load(os.path.join('./model_ckpts', opt.ckpt), map_location=device)['model_state_dict'])
+base_model.load_state_dict(torch.load(opt.ckpt, map_location=device)['model_state_dict'])
 
 ### results (.ply) saved here
 num_generate = opt.num_generate
 # save_dir = os.path.join('./pointE_inference', opt.save_name)
 # os.makedirs(save_dir, exist_ok=True)
 
-print('downloading upsampler checkpoint...')
-upsampler_model.load_state_dict(load_checkpoint('upsample', device))
+# EDIT: skip upsampling since I can't download the checkpoint for some reason...
+# print('downloading upsampler checkpoint...')
+# upsampler_model.load_state_dict(load_checkpoint('upsample', device))
 
 sampler = PointCloudSampler(
     device=device,
-    models=[base_model, upsampler_model],
-    diffusions=[base_diffusion, upsampler_diffusion],
-    num_points=[1024, 4096 - 1024],
+    models=[base_model],
+    diffusions=[base_diffusion],
+    num_points=[1024],
     aux_channels=['R', 'G', 'B'],
-    guidance_scale=[3.0, 0.0],
-    model_kwargs_key_filter=('texts', ''), # Do not condition the upsampler at all
+    guidance_scale=[3.0],
+    model_kwargs_key_filter=('texts', ), # Do not condition the upsampler at all
+    use_karras=[True],
+    karras_steps=[64],
+    sigma_min=[1e-3],
+    sigma_max=[120],
+    s_churn=[3]
 )
 
 print('creating SDF model...')
@@ -116,7 +122,7 @@ print('start mesh generation, generated mesh saved as .ply')
 for i in range(len(test_uids)):
     s = time.time()
     ### skip if output mesh exists
-    if os.path.exists(os.path.join(save_dir,'%s.ply'%(test_uids[i]))):
+    if os.path.exists(os.path.join(opt.save_dir,'%s.ply'%(test_uids[i]))):
        continue
    # only need a test prompt since we're generating point clouds
     prompt = test_dataset[i][1]
@@ -126,14 +132,15 @@ for i in range(len(test_uids)):
 
     pc = sampler.output_to_point_clouds(samples)[0]
 
-    mesh = marching_cubes_mesh(
-        pc=pc,
-        model=model,
-        batch_size=4096,
-        grid_size=128, 
-        progress=True,
-    )
+    # EDIT: just save the point cloud, no mesh
+    # mesh = marching_cubes_mesh(
+    #     pc=pc,
+    #     model=model,
+    #     batch_size=4096,
+    #     grid_size=128, 
+    #     progress=True,
+    # )
 
-    with open(os.path.join(save_dir, '%s.ply'%(test_uids[i])), 'wb') as f:
-        mesh.write_ply(f)
-    print('mesh generation progress: %d/%d'%(i,len(test_uids)), 'time cost:', time.time()-s)
+    with open(os.path.join(opt.save_dir, f'{prompt.lower().replace(" ", "_")}_{test_uids[i]}.ply'), 'wb') as f:
+        pc.write_ply(f)
+    # print('mesh generation progress: %d/%d'%(i,len(test_uids)), 'time cost:', time.time()-s)
