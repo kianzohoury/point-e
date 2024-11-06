@@ -22,6 +22,7 @@ from torch.nn.parallel import DistributedDataParallel
 import argparse
 
 import glob
+from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import sys
@@ -67,12 +68,11 @@ class pointE_train_dataset(Dataset):
         self.dataset = shapenetcore.ShapeNetCore(
             root=f"{module_path.parent}/Shapenetcore_benchmark",
             split=split,
-            max_points=1280 if defect_type == "removal" else 1024,
-            downsampling_mode="uniform",
+            max_points=1365 if defect_type == "removal" else 1024,
             input_transform=transform.RandomTransform(
-                removal_amount=0.2,
-                noise_amount=0.02,
-                noise_type="uniform",
+                removal_amount=0.25,
+                noise_amount=0.05,
+                noise_type="gaussian",
                 prob_both=0,
                 task="completion" if defect_type == "removal" else "denoising"
             ),
@@ -148,6 +148,11 @@ def train(rank, args):
     if resume_flag:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+    # tensorboard writer
+    log_dir = str(Path(module_path.parent, "runs"))
+    tb_writer = SummaryWriter(log_dir=log_dir)
+    print(f"Saving tensorboard logging files to: {log_dir}")
 
     best_val_loss = float("inf")
     for epoch in range(start_epoch, niter):
@@ -194,6 +199,9 @@ def train(rank, args):
                             val_loss.append(final_loss.item())
                         val_mean_loss = torch.mean(torch.Tensor(val_loss)).item()
                         print('rank: ',rank, i, val_mean_loss)
+                        
+                        # log to tensorboard
+                        tb_writer.add_scalar("loss/val", val_mean_loss, global_step=epoch)
                         
                 # EDIT: save best model only
                 if val_mean_loss < best_val_loss:
